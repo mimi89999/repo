@@ -1,0 +1,1 @@
+Test-Command: (! repo help) && repo init -u https://android.googlesource.com/platform/manifest -b android-9.0.0_r30
