@@ -6,8 +6,8 @@ Uploaders: Hans-Christoph Steiner <hans@eds.org>
 Build-Depends: debhelper (>= 9), bash-completion
 Standards-Version: 3.9.8
 Homepage: https://source.android.com/source/developing.html
-Vcs-Git: https://alioth.debian.org/anonscm/git/android-tools/repo.git
-Vcs-Browser: https://anonscm.debian.org/gitweb/?p=android-tools/repo.git
+Vcs-Git: https://salsa.debian.org/android-tools-team/repo.git
+Vcs-Browser: https://salsa.debian.org/android-tools-team/repo
 
 Package: repo
 Architecture: all
