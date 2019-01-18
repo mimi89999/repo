@@ -1,6 +1,7 @@
 repo (1.13.2-1) unstable; urgency=medium
 
   * New upstream version
+  * Add basic autopkgtest
 
  -- Hans-Christoph Steiner <hans@eds.org>  Thu, 17 Jan 2019 20:57:57 +0100
 
