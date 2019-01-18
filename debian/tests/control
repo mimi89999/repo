@@ -1,1 +1,2 @@
-Test-Command: (! repo help) && repo init --depth=1 -u https://android.googlesource.com/platform/manifest -b android-2.3.7_r1
+Test-Command: (! repo help) && repo init --quiet --depth=1 -u https://android.googlesource.com/platform/manifest -b android-2.3.7_r1
+Restrictions: allow-stderr
