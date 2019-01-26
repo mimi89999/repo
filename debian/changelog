@@ -1,3 +1,9 @@
+repo (1.13.2-1~bpo9+1) stretch-backports; urgency=medium
+
+  * rebuild for stretch-backports
+
+ -- Hans-Christoph Steiner <hans@eds.org>  Sun, 27 Jan 2019 00:18:12 +0100
+
 repo (1.13.2-1) unstable; urgency=medium
 
   * New upstream version
