@@ -80,7 +80,7 @@ class FileDescriptorStreams(object):
     """
     raise NotImplementedError
 
-  def _create_stream(fd, dest, std_name):
+  def _create_stream(self, fd, dest, std_name):
     """ Creates a new stream wrapping an existing file descriptor.
     """
     raise NotImplementedError
@@ -92,6 +92,7 @@ class _FileDescriptorStreamsNonBlocking(FileDescriptorStreams):
   """
   class Stream(object):
     """ Encapsulates a file descriptor """
+
     def __init__(self, fd, dest, std_name):
       self.fd = fd
       self.dest = dest
@@ -125,6 +126,7 @@ class _FileDescriptorStreamsThreads(FileDescriptorStreams):
   non blocking I/O. This implementation requires creating threads issuing
   blocking read operations on file descriptors.
   """
+
   def __init__(self):
     super(_FileDescriptorStreamsThreads, self).__init__()
     # The queue is shared accross all threads so we can simulate the
@@ -144,12 +146,14 @@ class _FileDescriptorStreamsThreads(FileDescriptorStreams):
 
   class QueueItem(object):
     """ Item put in the shared queue """
+
     def __init__(self, stream, data):
       self.stream = stream
       self.data = data
 
   class Stream(object):
     """ Encapsulates a file descriptor """
+
     def __init__(self, fd, dest, std_name, queue):
       self.fd = fd
       self.dest = dest
@@ -175,7 +179,7 @@ class _FileDescriptorStreamsThreads(FileDescriptorStreams):
       for line in iter(self.fd.readline, b''):
         self.queue.put(_FileDescriptorStreamsThreads.QueueItem(self, line))
       self.fd.close()
-      self.queue.put(_FileDescriptorStreamsThreads.QueueItem(self, None))
+      self.queue.put(_FileDescriptorStreamsThreads.QueueItem(self, b''))
 
 
 def symlink(source, link_name):
@@ -241,14 +245,15 @@ def _makelongpath(path):
     return path
 
 
-def rmtree(path):
+def rmtree(path, ignore_errors=False):
   """shutil.rmtree(path) wrapper with support for long paths on Windows.
 
   Availability: Unix, Windows."""
+  onerror = None
   if isWindows():
-    shutil.rmtree(_makelongpath(path), onerror=handle_rmtree_error)
-  else:
-    shutil.rmtree(path)
+    path = _makelongpath(path)
+    onerror = handle_rmtree_error
+  shutil.rmtree(path, ignore_errors=ignore_errors, onerror=onerror)
 
 
 def handle_rmtree_error(function, path, excinfo):
