@@ -28,10 +28,10 @@ from command import Command, MirrorSafeCommand
 import platform_utils
 
 _CAN_COLOR = [
-  'branch',
-  'diff',
-  'grep',
-  'log',
+    'branch',
+    'diff',
+    'grep',
+    'log',
 ]
 
 
@@ -127,7 +127,8 @@ without iterating through the remaining projects.
                  help="Execute the command only on projects matching regex or wildcard expression")
     p.add_option('-i', '--inverse-regex',
                  dest='inverse_regex', action='store_true',
-                 help="Execute the command only on projects not matching regex or wildcard expression")
+                 help="Execute the command only on projects not matching regex or "
+                      "wildcard expression")
     p.add_option('-g', '--groups',
                  dest='groups',
                  help="Execute the command only on projects matching the specified groups")
@@ -139,6 +140,9 @@ without iterating through the remaining projects.
     p.add_option('-e', '--abort-on-errors',
                  dest='abort_on_errors', action='store_true',
                  help='Abort if a command exits unsuccessfully')
+    p.add_option('--ignore-missing', action='store_true',
+                 help='Silently skip & do not exit non-zero due missing '
+                      'checkouts')
 
     g = p.add_option_group('Output')
     g.add_option('-p',
@@ -167,14 +171,14 @@ without iterating through the remaining projects.
     else:
       lrev = None
     return {
-      'name': project.name,
-      'relpath': project.relpath,
-      'remote_name': project.remote.name,
-      'lrev': lrev,
-      'rrev': project.revisionExpr,
-      'annotations': dict((a.name, a.value) for a in project.annotations),
-      'gitdir': project.gitdir,
-      'worktree': project.worktree,
+        'name': project.name,
+        'relpath': project.relpath,
+        'remote_name': project.remote.name,
+        'lrev': lrev,
+        'rrev': project.revisionExpr,
+        'annotations': dict((a.name, a.value) for a in project.annotations),
+        'gitdir': project.gitdir,
+        'worktree': project.worktree,
     }
 
   def ValidateOptions(self, opt, args):
@@ -192,9 +196,9 @@ without iterating through the remaining projects.
       cmd.append(cmd[0])
     cmd.extend(opt.command[1:])
 
-    if  opt.project_header \
-    and not shell \
-    and cmd[0] == 'git':
+    if opt.project_header \
+            and not shell \
+            and cmd[0] == 'git':
       # If this is a direct git command that can enable colorized
       # output and the user prefers coloring, add --color into the
       # command line because we are going to wrap the command into
@@ -217,7 +221,7 @@ without iterating through the remaining projects.
 
     smart_sync_manifest_name = "smart_sync_override.xml"
     smart_sync_manifest_path = os.path.join(
-      self.manifest.manifestProject.worktree, smart_sync_manifest_name)
+        self.manifest.manifestProject.worktree, smart_sync_manifest_name)
 
     if os.path.isfile(smart_sync_manifest_path):
       self.manifest.Override(smart_sync_manifest_path)
@@ -235,8 +239,8 @@ without iterating through the remaining projects.
     try:
       config = self.manifest.manifestProject.config
       results_it = pool.imap(
-         DoWorkWrapper,
-         self.ProjectArgs(projects, mirror, opt, cmd, shell, config))
+          DoWorkWrapper,
+          self.ProjectArgs(projects, mirror, opt, cmd, shell, config))
       pool.close()
       for r in results_it:
         rc = rc or r
@@ -250,7 +254,7 @@ without iterating through the remaining projects.
     except Exception as e:
       # Catch any other exceptions raised
       print('Got an error, terminating the pool: %s: %s' %
-              (type(e).__name__, e),
+            (type(e).__name__, e),
             file=sys.stderr)
       pool.terminate()
       rc = rc or getattr(e, 'errno', 1)
@@ -265,7 +269,7 @@ without iterating through the remaining projects.
         project = self._SerializeProject(p)
       except Exception as e:
         print('Project list error on project %s: %s: %s' %
-                (p.name, type(e).__name__, e),
+              (p.name, type(e).__name__, e),
               file=sys.stderr)
         return
       except KeyboardInterrupt:
@@ -274,6 +278,7 @@ without iterating through the remaining projects.
         return
       yield [mirror, opt, cmd, shell, cnt, config, project]
 
+
 class WorkerKeyboardInterrupt(Exception):
   """ Keyboard interrupt exception for worker processes. """
   pass
@@ -281,6 +286,7 @@ class WorkerKeyboardInterrupt(Exception):
 
 def InitWorker():
   signal.signal(signal.SIGINT, signal.SIG_IGN)
+
 
 def DoWorkWrapper(args):
   """ A wrapper around the DoWork() method.
@@ -300,11 +306,10 @@ def DoWorkWrapper(args):
 
 def DoWork(project, mirror, opt, cmd, shell, cnt, config):
   env = os.environ.copy()
+
   def setenv(name, val):
     if val is None:
       val = ''
-    if hasattr(val, 'encode'):
-      val = val.encode()
     env[name] = val
 
   setenv('REPO_PROJECT', project['name'])
@@ -323,8 +328,12 @@ def DoWork(project, mirror, opt, cmd, shell, cnt, config):
     cwd = project['worktree']
 
   if not os.path.exists(cwd):
+    # Allow the user to silently ignore missing checkouts so they can run on
+    # partial checkouts (good for infra recovery tools).
+    if opt.ignore_missing:
+      return 0
     if ((opt.project_header and opt.verbose)
-        or not opt.project_header):
+            or not opt.project_header):
       print('skipping %s/' % project['relpath'], file=sys.stderr)
     return 1
 
@@ -359,7 +368,7 @@ def DoWork(project, mirror, opt, cmd, shell, cnt, config):
     while not s_in.is_done:
       in_ready = s_in.select()
       for s in in_ready:
-        buf = s.read()
+        buf = s.read().decode()
         if not buf:
           s.close()
           s_in.remove(s)
