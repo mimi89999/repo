@@ -13,8 +13,8 @@ Package: repo
 Architecture: all
 Depends: git (>= 1.7.2),
          gnupg,
-         python,
-         python-kerberos,
+         python3 (>= 3.6),
+         python3-kerberos,
          ${misc:Depends}
 Description: repository management tool built on top of git
  Repo is a repository management tool that the Android developers built on top
