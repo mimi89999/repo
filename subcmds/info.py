@@ -1,3 +1,4 @@
+# -*- coding:utf-8 -*-
 #
 # Copyright (C) 2012 The Android Open Source Project
 #
@@ -15,7 +16,6 @@
 
 from command import PagedCommand
 from color import Coloring
-from error import NoSuchProjectError
 from git_refs import R_M
 
 class _Coloring(Coloring):
@@ -45,7 +45,7 @@ class Info(PagedCommand):
   def Execute(self, opt, args):
     self.out = _Coloring(self.manifest.globalConfig)
     self.heading = self.out.printer('heading', attr = 'bold')
-    self.headtext = self.out.printer('headtext', fg = 'yellow')
+    self.headtext = self.out.nofmt_printer('headtext', fg = 'yellow')
     self.redtext = self.out.printer('redtext', fg = 'red')
     self.sha = self.out.printer("sha", fg = 'yellow')
     self.text = self.out.nofmt_printer('text')
@@ -81,10 +81,8 @@ class Info(PagedCommand):
     self.out.nl()
 
   def printDiffInfo(self, args):
-    try:
-      projs = self.GetProjects(args)
-    except NoSuchProjectError:
-      return
+    # We let exceptions bubble up to main as they'll be well structured.
+    projs = self.GetProjects(args)
 
     for p in projs:
       self.heading("Project: ")
@@ -96,13 +94,19 @@ class Info(PagedCommand):
       self.out.nl()
 
       self.heading("Current revision: ")
-      self.headtext(p.revisionExpr)
+      self.headtext(p.GetRevisionId())
       self.out.nl()
 
-      localBranches = p.GetBranches().keys()
+      currentBranch = p.CurrentBranch
+      if currentBranch:
+        self.heading('Current branch: ')
+        self.headtext(currentBranch)
+        self.out.nl()
+
+      localBranches = list(p.GetBranches().keys())
       self.heading("Local Branches: ")
       self.redtext(str(len(localBranches)))
-      if len(localBranches) > 0:
+      if localBranches:
         self.text(" [")
         self.text(", ".join(localBranches))
         self.text("]")
