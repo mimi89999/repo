@@ -1,3 +1,4 @@
+# -*- coding:utf-8 -*-
 #
 # Copyright (C) 2009 The Android Open Source Project
 #
@@ -14,7 +15,7 @@
 # limitations under the License.
 
 import os
-from trace import Trace
+from repo_trace import Trace
 import platform_utils
 
 HEAD      = 'HEAD'

@@ -1,3 +1,5 @@
+# -*- coding:utf-8 -*-
+#
 # Copyright (C) 2008 The Android Open Source Project
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,6 +18,7 @@ from __future__ import print_function
 import errno
 import filecmp
 import glob
+import json
 import os
 import random
 import re
@@ -36,7 +39,8 @@ from error import GitError, HookError, UploadError, DownloadError
 from error import ManifestInvalidRevisionError
 from error import NoManifestException
 import platform_utils
-from trace import IsTrace, Trace
+import progress
+from repo_trace import IsTrace, Trace
 
 from git_refs import GitRefs, HEAD, R_HEADS, R_TAGS, R_PUB, R_M
 
@@ -226,6 +230,7 @@ class DiffColoring(Coloring):
   def __init__(self, config):
     Coloring.__init__(self, config, 'diff')
     self.project = self.printer('header', attr='bold')
+    self.fail = self.printer('fail', fg='red')
 
 
 class _Annotation(object):
@@ -542,6 +547,105 @@ class RepoHook(object):
         prompt % (self._GetMustVerb(), self._script_fullpath),
         'Scripts have changed since %s was allowed.' % (self._hook_type,))
 
+  @staticmethod
+  def _ExtractInterpFromShebang(data):
+    """Extract the interpreter used in the shebang.
+
+    Try to locate the interpreter the script is using (ignoring `env`).
+
+    Args:
+      data: The file content of the script.
+
+    Returns:
+      The basename of the main script interpreter, or None if a shebang is not
+      used or could not be parsed out.
+    """
+    firstline = data.splitlines()[:1]
+    if not firstline:
+      return None
+
+    # The format here can be tricky.
+    shebang = firstline[0].strip()
+    m = re.match(r'^#!\s*([^\s]+)(?:\s+([^\s]+))?', shebang)
+    if not m:
+      return None
+
+    # If the using `env`, find the target program.
+    interp = m.group(1)
+    if os.path.basename(interp) == 'env':
+      interp = m.group(2)
+
+    return interp
+
+  def _ExecuteHookViaReexec(self, interp, context, **kwargs):
+    """Execute the hook script through |interp|.
+
+    Note: Support for this feature should be dropped ~Jun 2021.
+
+    Args:
+      interp: The Python program to run.
+      context: Basic Python context to execute the hook inside.
+      kwargs: Arbitrary arguments to pass to the hook script.
+
+    Raises:
+      HookError: When the hooks failed for any reason.
+    """
+    # This logic needs to be kept in sync with _ExecuteHookViaImport below.
+    script = """
+import json, os, sys
+path = '''%(path)s'''
+kwargs = json.loads('''%(kwargs)s''')
+context = json.loads('''%(context)s''')
+sys.path.insert(0, os.path.dirname(path))
+data = open(path).read()
+exec(compile(data, path, 'exec'), context)
+context['main'](**kwargs)
+""" % {
+        'path': self._script_fullpath,
+        'kwargs': json.dumps(kwargs),
+        'context': json.dumps(context),
+    }
+
+    # We pass the script via stdin to avoid OS argv limits.  It also makes
+    # unhandled exception tracebacks less verbose/confusing for users.
+    cmd = [interp, '-c', 'import sys; exec(sys.stdin.read())']
+    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+    proc.communicate(input=script.encode('utf-8'))
+    if proc.returncode:
+      raise HookError('Failed to run %s hook.' % (self._hook_type,))
+
+  def _ExecuteHookViaImport(self, data, context, **kwargs):
+    """Execute the hook code in |data| directly.
+
+    Args:
+      data: The code of the hook to execute.
+      context: Basic Python context to execute the hook inside.
+      kwargs: Arbitrary arguments to pass to the hook script.
+
+    Raises:
+      HookError: When the hooks failed for any reason.
+    """
+    # Exec, storing global context in the context dict.  We catch exceptions
+    # and convert to a HookError w/ just the failing traceback.
+    try:
+      exec(compile(data, self._script_fullpath, 'exec'), context)
+    except Exception:
+      raise HookError('%s\nFailed to import %s hook; see traceback above.' %
+                      (traceback.format_exc(), self._hook_type))
+
+    # Running the script should have defined a main() function.
+    if 'main' not in context:
+      raise HookError('Missing main() in: "%s"' % self._script_fullpath)
+
+    # Call the main function in the hook.  If the hook should cause the
+    # build to fail, it will raise an Exception.  We'll catch that convert
+    # to a HookError w/ just the failing traceback.
+    try:
+      context['main'](**kwargs)
+    except Exception:
+      raise HookError('%s\nFailed to run main() for %s hook; see traceback '
+                      'above.' % (traceback.format_exc(), self._hook_type))
+
   def _ExecuteHook(self, **kwargs):
     """Actually execute the given hook.
 
@@ -566,19 +670,8 @@ class RepoHook(object):
       # hooks can't import repo files.
       sys.path = [os.path.dirname(self._script_fullpath)] + sys.path[1:]
 
-      # Exec, storing global context in the context dict.  We catch exceptions
-      # and  convert to a HookError w/ just the failing traceback.
+      # Initial global context for the hook to run within.
       context = {'__file__': self._script_fullpath}
-      try:
-        exec(compile(open(self._script_fullpath).read(),
-                     self._script_fullpath, 'exec'), context)
-      except Exception:
-        raise HookError('%s\nFailed to import %s hook; see traceback above.' %
-                        (traceback.format_exc(), self._hook_type))
-
-      # Running the script should have defined a main() function.
-      if 'main' not in context:
-        raise HookError('Missing main() in: "%s"' % self._script_fullpath)
 
       # Add 'hook_should_take_kwargs' to the arguments to be passed to main.
       # We don't actually want hooks to define their main with this argument--
@@ -590,15 +683,31 @@ class RepoHook(object):
       kwargs = kwargs.copy()
       kwargs['hook_should_take_kwargs'] = True
 
-      # Call the main function in the hook.  If the hook should cause the
-      # build to fail, it will raise an Exception.  We'll catch that convert
-      # to a HookError w/ just the failing traceback.
-      try:
-        context['main'](**kwargs)
-      except Exception:
-        raise HookError('%s\nFailed to run main() for %s hook; see traceback '
-                        'above.' % (traceback.format_exc(),
-                                    self._hook_type))
+      # See what version of python the hook has been written against.
+      data = open(self._script_fullpath).read()
+      interp = self._ExtractInterpFromShebang(data)
+      reexec = False
+      if interp:
+        prog = os.path.basename(interp)
+        if prog.startswith('python2') and sys.version_info.major != 2:
+          reexec = True
+        elif prog.startswith('python3') and sys.version_info.major == 2:
+          reexec = True
+
+      # Attempt to execute the hooks through the requested version of Python.
+      if reexec:
+        try:
+          self._ExecuteHookViaReexec(interp, context, **kwargs)
+        except OSError as e:
+          if e.errno == errno.ENOENT:
+            # We couldn't find the interpreter, so fallback to importing.
+            reexec = False
+          else:
+            raise
+
+      # Run the hook by importing directly.
+      if not reexec:
+        self._ExecuteHookViaImport(data, context, **kwargs)
     finally:
       # Restore sys.path and CWD.
       sys.path = orig_syspath
@@ -757,10 +866,17 @@ class Project(object):
   @property
   def CurrentBranch(self):
     """Obtain the name of the currently checked out branch.
-       The branch name omits the 'refs/heads/' prefix.
-       None is returned if the project is on a detached HEAD.
+
+    The branch name omits the 'refs/heads/' prefix.
+    None is returned if the project is on a detached HEAD, or if the work_git is
+    otheriwse inaccessible (e.g. an incomplete sync).
     """
-    b = self.work_git.GetHead()
+    try:
+      b = self.work_git.GetHead()
+    except NoManifestException:
+      # If the local checkout is in a bad state, don't barf.  Let the callers
+      # process this like the head is unreadable.
+      return None
     if b.startswith(R_HEADS):
       return b[len(R_HEADS):]
     return None
@@ -1028,19 +1144,29 @@ class Project(object):
       cmd.append('--src-prefix=a/%s/' % self.relpath)
       cmd.append('--dst-prefix=b/%s/' % self.relpath)
     cmd.append('--')
-    p = GitCommand(self,
-                   cmd,
-                   capture_stdout=True,
-                   capture_stderr=True)
+    try:
+      p = GitCommand(self,
+                     cmd,
+                     capture_stdout=True,
+                     capture_stderr=True)
+    except GitError as e:
+      out.nl()
+      out.project('project %s/' % self.relpath)
+      out.nl()
+      out.fail('%s', str(e))
+      out.nl()
+      return False
     has_diff = False
     for line in p.process.stdout:
+      if not hasattr(line, 'encode'):
+        line = line.decode()
       if not has_diff:
         out.nl()
         out.project('project %s/' % self.relpath)
         out.nl()
         has_diff = True
       print(line[:-1])
-    p.Wait()
+    return p.Wait() == 0
 
 
 # Publish / Upload ##
@@ -1172,10 +1298,11 @@ class Project(object):
 
     ref_spec = '%s:refs/%s/%s' % (R_HEADS + branch.name, upload_type,
                                   dest_branch)
+    opts = []
     if auto_topic:
-      ref_spec = ref_spec + '/' + branch.name
+      opts += ['topic=' + branch.name]
 
-    opts = ['r=%s' % p for p in people[0]]
+    opts += ['r=%s' % p for p in people[0]]
     opts += ['cc=%s' % p for p in people[1]]
     if notify:
       opts += ['notify=' + notify]
@@ -1223,7 +1350,8 @@ class Project(object):
                        archive=False,
                        optimized_fetch=False,
                        prune=False,
-                       submodules=False):
+                       submodules=False,
+                       clone_filter=None):
     """Perform only the network IO portion of the sync process.
        Local working directory/branch state is not affected.
     """
@@ -1306,7 +1434,8 @@ class Project(object):
         not self._RemoteFetch(initial=is_new, quiet=quiet, alt_dir=alt_dir,
                               current_branch_only=current_branch_only,
                               no_tags=no_tags, prune=prune, depth=depth,
-                              submodules=submodules)):
+                              submodules=submodules, force_sync=force_sync,
+                              clone_filter=clone_filter)):
       return False
 
     mp = self.manifest.manifestProject
@@ -1485,7 +1614,7 @@ class Project(object):
     last_mine = None
     cnt_mine = 0
     for commit in local_changes:
-      commit_id, committer_email = commit.decode('utf-8').split(' ', 1)
+      commit_id, committer_email = commit.split(' ', 1)
       if committer_email == self.UserEmail:
         last_mine = commit_id
         cnt_mine += 1
@@ -1585,7 +1714,7 @@ class Project(object):
 
 # Branch Management ##
 
-  def StartBranch(self, name, branch_merge=''):
+  def StartBranch(self, name, branch_merge='', revision=None):
     """Create a new branch off the manifest's revision.
     """
     if not branch_merge:
@@ -1606,7 +1735,11 @@ class Project(object):
     branch.merge = branch_merge
     if not branch.merge.startswith('refs/') and not ID_RE.match(branch_merge):
       branch.merge = R_HEADS + branch_merge
-    revid = self.GetRevisionId(all_refs)
+
+    if revision is None:
+      revid = self.GetRevisionId(all_refs)
+    else:
+      revid = self.work_git.rev_parse(revision)
 
     if head.startswith(R_HEADS):
       try:
@@ -1807,8 +1940,8 @@ class Project(object):
         submodules.append((sub_rev, sub_path, sub_url))
       return submodules
 
-    re_path = re.compile(r'^submodule\.([^.]+)\.path=(.*)$')
-    re_url = re.compile(r'^submodule\.([^.]+)\.url=(.*)$')
+    re_path = re.compile(r'^submodule\.(.+)\.path=(.*)$')
+    re_url = re.compile(r'^submodule\.(.+)\.url=(.*)$')
 
     def parse_gitmodules(gitdir, rev):
       cmd = ['cat-file', 'blob', '%s:.gitmodules' % rev]
@@ -1955,7 +2088,9 @@ class Project(object):
                    no_tags=False,
                    prune=False,
                    depth=None,
-                   submodules=False):
+                   submodules=False,
+                   force_sync=False,
+                   clone_filter=None):
 
     is_sha1 = False
     tag_name = None
@@ -1979,8 +2114,9 @@ class Project(object):
 
       if is_sha1 or tag_name is not None:
         if self._CheckForImmutableRevision():
-          print('Skipped fetching project %s (already have persistent ref)'
-                % self.name)
+          if not quiet:
+            print('Skipped fetching project %s (already have persistent ref)'
+                  % self.name)
           return True
       if is_sha1 and not depth:
         # When syncing a specific commit and --depth is not set:
@@ -2045,6 +2181,11 @@ class Project(object):
 
     cmd = ['fetch']
 
+    if clone_filter:
+      git_require((2, 19, 0), fail=True, msg='partial clones')
+      cmd.append('--filter=%s' % clone_filter)
+      self.config.SetString('extensions.partialclone', self.remote.name)
+
     if depth:
       cmd.append('--depth=%s' % depth)
     else:
@@ -2061,12 +2202,18 @@ class Project(object):
       cmd.append('--update-head-ok')
     cmd.append(name)
 
+    spec = []
+
     # If using depth then we should not get all the tags since they may
     # be outside of the depth.
     if no_tags or depth:
       cmd.append('--no-tags')
     else:
       cmd.append('--tags')
+      spec.append(str((u'+refs/tags/*:') + remote.ToLocal('refs/tags/*')))
+
+    if force_sync:
+      cmd.append('--force')
 
     if prune:
       cmd.append('--prune')
@@ -2074,7 +2221,6 @@ class Project(object):
     if submodules:
       cmd.append('--recurse-submodules=on-demand')
 
-    spec = []
     if not current_branch_only:
       # Fetch whole repo
       spec.append(str((u'+refs/heads/*:') + remote.ToLocal('refs/heads/*')))
@@ -2142,12 +2288,12 @@ class Project(object):
           return self._RemoteFetch(name=name,
                                    current_branch_only=current_branch_only,
                                    initial=False, quiet=quiet, alt_dir=alt_dir,
-                                   depth=None)
+                                   depth=None, clone_filter=clone_filter)
         else:
           # Avoid infinite recursion: sync all branches with depth set to None
           return self._RemoteFetch(name=name, current_branch_only=False,
                                    initial=False, quiet=quiet, alt_dir=alt_dir,
-                                   depth=None)
+                                   depth=None, clone_filter=clone_filter)
 
     return ok
 
@@ -2209,13 +2355,17 @@ class Project(object):
         cmd += ['--continue-at', '%d' % (size,)]
       else:
         platform_utils.remove(tmpPath)
-    if 'http_proxy' in os.environ and 'darwin' == sys.platform:
-      cmd += ['--proxy', os.environ['http_proxy']]
-    with GetUrlCookieFile(srcUrl, quiet) as (cookiefile, _proxy):
+    with GetUrlCookieFile(srcUrl, quiet) as (cookiefile, proxy):
       if cookiefile:
         cmd += ['--cookie', cookiefile, '--cookie-jar', cookiefile]
-      if srcUrl.startswith('persistent-'):
-        srcUrl = srcUrl[len('persistent-'):]
+      if proxy:
+        cmd += ['--proxy', proxy]
+      elif 'http_proxy' in os.environ and 'darwin' == sys.platform:
+        cmd += ['--proxy', os.environ['http_proxy']]
+      if srcUrl.startswith('persistent-https'):
+        srcUrl = 'http' + srcUrl[len('persistent-https'):]
+      elif srcUrl.startswith('persistent-http'):
+        srcUrl = 'http' + srcUrl[len('persistent-http'):]
       cmd += [srcUrl]
 
       if IsTrace():
@@ -2249,8 +2399,8 @@ class Project(object):
 
   def _IsValidBundle(self, path, quiet):
     try:
-      with open(path) as f:
-        if f.read(16) == '# v2 git bundle\n':
+      with open(path, 'rb') as f:
+        if f.read(16) == b'# v2 git bundle\n':
           return True
         else:
           if not quiet:
@@ -2281,10 +2431,7 @@ class Project(object):
     cmd = ['ls-remote', self.remote.name, refs]
     p = GitCommand(self, cmd, capture_stdout=True)
     if p.Wait() == 0:
-      if hasattr(p.stdout, 'decode'):
-        return p.stdout.decode('utf-8')
-      else:
-        return p.stdout
+      return p.stdout
     return None
 
   def _Revert(self, rev):
@@ -2393,6 +2540,7 @@ class Project(object):
           if m.Has(key, include_defaults=False):
             self.config.SetString(key, m.GetString(key))
         self.config.SetString('filter.lfs.smudge', 'git-lfs smudge --skip -- %f')
+        self.config.SetString('filter.lfs.process', 'git-lfs filter-process --skip')
         if self.manifest.IsMirror:
           self.config.SetString('core.bare', 'true')
         else:
@@ -2584,7 +2732,7 @@ class Project(object):
         cmd.append('-v')
         cmd.append(HEAD)
         if GitCommand(self, cmd).Wait() != 0:
-          raise GitError("cannot initialize work tree")
+          raise GitError("cannot initialize work tree for " + self.name)
 
         if submodules:
           self._SyncSubmodules(quiet=True)
@@ -2684,6 +2832,7 @@ class Project(object):
     def DiffZ(self, name, *args):
       cmd = [name]
       cmd.append('-z')
+      cmd.append('--ignore-submodules')
       cmd.extend(args)
       p = GitCommand(self._project,
                      cmd,
@@ -2693,6 +2842,8 @@ class Project(object):
                      capture_stderr=True)
       try:
         out = p.process.stdout.read()
+        if not hasattr(out, 'encode'):
+          out = out.decode()
         r = {}
         if out:
           out = iter(out[:-1].split('\0'))
@@ -2801,15 +2952,10 @@ class Project(object):
                      gitdir=self._gitdir,
                      capture_stdout=True,
                      capture_stderr=True)
-      r = []
-      for line in p.process.stdout:
-        if line[-1] == '\n':
-          line = line[:-1]
-        r.append(line)
       if p.Wait() != 0:
         raise GitError('%s rev-list %s: %s' %
                        (self._project.name, str(args), p.stderr))
-      return r
+      return p.stdout.splitlines()
 
     def __getattr__(self, name):
       """Allow arbitrary git commands using pythonic syntax.
@@ -2857,10 +3003,6 @@ class Project(object):
           raise GitError('%s %s: %s' %
                          (self._project.name, name, p.stderr))
         r = p.stdout
-        try:
-          r = r.decode('utf-8')
-        except AttributeError:
-          pass
         if r.endswith('\n') and r.index('\n') == len(r) - 1:
           return r[:-1]
         return r
@@ -2988,6 +3130,11 @@ class SyncBuffer(object):
     return True
 
   def _PrintMessages(self):
+    if self._messages or self._failures:
+      if os.isatty(2):
+        self.out.write(progress.CSI_ERASE_LINE)
+      self.out.write('\r')
+
     for m in self._messages:
       m.Print(self)
     for m in self._failures:
