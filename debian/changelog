@@ -1,3 +1,14 @@
+repo (1.13.7-1) unstable; urgency=medium
+
+  [ Nicolas Braud-Santoni ]
+  * New upstream version 1.13.7
+  * Switch to Python 3  (Closes: #938352)
+  * debian/copyright: Fix ordering of paragraphs
+  * debian/control: Declare compliance with policy v4.4.1
+  * Upgrade to dh compatibility level 12
+
+ -- Hans-Christoph Steiner <hans@eds.org>  Fri, 18 Oct 2019 09:41:14 +0200
+
 repo (1.13.2-1) unstable; urgency=medium
 
   * New upstream version
