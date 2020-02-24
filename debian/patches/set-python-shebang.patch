@@ -5,8 +5,8 @@ Description:
 
 Origin: vendor
 From: Hans-Christoph Steiner <hans@eds.org>
-Reviewed-by: Nicolas Braud-Santoni <nicoo@debian.org>
-Last-Update: 2019-10-15
+Reviewed-by: Marcos Marado <mindboosternoori@gmail.com>
+Last-Update: 2020-02-24
 Applied-Upstream: not-needed
 
 --- a/repo
@@ -15,5 +15,5 @@ Applied-Upstream: not-needed
 -#!/usr/bin/env python
 +#!/usr/bin/python3
  # -*- coding:utf-8 -*-
- 
- """Repo launcher.
+ #
+ # Copyright (C) 2008 The Android Open Source Project
