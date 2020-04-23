@@ -1,11 +1,11 @@
-repo (2.5-1) unstable; urgency=medium
+repo (2.6-1) unstable; urgency=medium
 
   [ Marcos Marado ]
-  * New upstream version 2.5
+  * New upstream version 2.6
   * updated set-python-shebang.patch
   * Pass autopkg tests, by reverting dh compatibility (Closes: #949461)
 
- -- Marcos Marado <mindboosternoori@gmail.com>  Thu, 9 Apr 2020 13:23:00 +0100
+ -- Marcos Marado <mindboosternoori@gmail.com>  Thu, 23 Apr 2020 12:04:00 +0100
 
 repo (1.13.7-1) unstable; urgency=medium
 
